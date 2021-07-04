@@ -1,0 +1,99 @@
+# vim:ft=sh
+# ec2rc
+# shellcheck shell=bash
+###
+### Variables
+###
+##
+## Build aws command
+##
+if [[ -z $AVAILABILITY_ZONE ]]; then 
+	AVAILABILITY_ZONE=$(curl --silent http://169.254.169.254/latest/meta-data/placement/availability-zone)
+	export AVAILABILITY_ZONE
+fi
+export AZ_REGION=${AVAILABILITY_ZONE:0:9}
+if [[ -z $AWSBASE ]] ; then
+	AWSBASE=$(command -v /usr/local/bin/aws || \
+		command -v "$CONDA_PREFIX"/envs/aws/bin/aws || \
+		command -v "$CONDA_PREFIX"/bin/aws || \
+		command -v /usr/bin/aws || \
+		command -v aws)
+		export AWSBASE
+fi
+export AWSCMD="$AWSBASE --region $AZ_REGION --output text"
+if [[ -z $INSTANCE_ID ]] ; then 
+	INSTANCE_ID=$(curl --silent http://169.254.169.254/latest/meta-data/instance-id)
+	export INSTANCE_ID
+fi
+function runAwsCommand () {
+        local runCmd="$*"
+        local runJitter=5
+        local runCycle=0
+	set -o noglob
+	# shellcheck disable=SC2086
+	# Using quotes confuses aws command quotes
+	while ! $AWSCMD $runCmd ; do
+		local runCycle=$(( runCycle + 1 ))
+		local runJitter=$(( RANDOM  % runCycle ))
+		sleep $(( ( RANDOM % runCycle ) + runJitter ))
+        done
+	set +o noglob
+}
+#
+# Set distribution specific variables
+#
+if [ -f /etc/os-release ]; then
+    # shellcheck source=/etc/os-release
+	# shellcheck disable=SC1091
+    source /etc/os-release
+    export OSDISTRIBUTION=${NAME%% *}
+    export OSVER=$VERSION_ID
+else
+	export OSDISTRIBUTION=unknown
+    export OSVER=unknown
+fi
+if [[ -n $OSDISTRIBUTION ]] ; then
+	case $OSDISTRIBUTION in
+		Amazon)
+			PKG_CMD=$(which yum)
+			export PKG_CMD
+		    export DEFUSER="ec2-user"
+		    ;;
+		Ubuntu|Debian)
+			PKG_CMD=$(which apt-get)
+			export PKG_CMD
+			case $OSDISTRIBUTION in
+				Ubuntu)
+					export DEFUSER="ubuntu"
+					;;
+				Debian)
+					export DEFUSER="admin"
+					;;
+			esac
+	       	;;
+       	*)
+	       	echo Linux distribution not detected:
+	       	;;
+	esac
+fi
+
+##
+## Functions
+##
+
+# Install supporting tools, when required
+function installIfNeeded {
+	local commandNeeded=$1
+	local commandPackage=$2
+	local commandRepo=$3
+	set -o noglob
+	if ! command -v "$commandNeeded" ; then
+		if [[ -n $commandRepo ]] ; then 
+			amazon-linux-extras install -y "$commandRepo"
+		fi
+		$PKG_CMD install -y "$commandPackage" 
+		logThis "Installed $commandPackage package required by $commandNeeded command"
+	fi
+	set +o noglob
+}
+
